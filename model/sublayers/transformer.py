@@ -14,6 +14,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import copy
+import numpy as np
+
+
+def clones(module, N):
+    "Produce N identical layers."
+    return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
+
+
+def subsequent_mask(size):
+    "Mask out subsequent positions."
+    attn_shape = (1, size, size)
+    subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
+    return torch.from_numpy(subsequent_mask) == 0
 
 
 class WordEmbeddings(nn.Module):
@@ -57,6 +71,26 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x) 
     
 
+def attention(query, key, value, mask=None, dropout=None):
+    # Input shape: [batch, num_heads, seq_len, depth]
+    # Get the depth
+    d_k = query.size(-1)
+    
+    # This tensor multiplication is actually the place where computation and memory are most intensive
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+    # Apply mask (used Decoder Attention) to avoid looking into the future tokens (casual)
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, -1e9)
+    
+    # The attention tensor is used more for debugging
+    p_attn = F.softmax(scores, dim = -1)
+    if dropout is not None:
+        p_attn = dropout(p_attn)
+        
+    # Output shape: [batch, num_heads, seq_len, depth]
+    return torch.matmul(p_attn, value), p_attn
+    
+
 class MultiHeadedAttention(nn.Module):
     def __init__(self, num_heads, d_model, dropout=0.1):
         super().__init__()
@@ -84,3 +118,83 @@ class MultiHeadedAttention(nn.Module):
         # 3) "Concat" using a view and apply a final linear. 
         x = x.transpose(1, 2).contiguous().view(nbatches, -1, self.h * self.d_k)
         return self.linears[-1](x)
+    
+    
+
+class Encoder(nn.Module):
+    "Core encoder is a stack of N layers"
+    def __init__(self, layer, N):
+        super().__init__()
+        self.layers = clones(layer, N)
+        self.norm = LayerNorm(layer.size)
+        
+    def forward(self, x, mask):
+        "Pass the input (and mask) through each layer in turn."
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(x)
+    
+
+
+class Decoder(nn.Module):
+    "Generic N layer decoder with masking."
+    def __init__(self, layer, N):
+        super().__init__()
+        self.layers = clones(layer, N)
+        self.norm = LayerNorm(layer.size)
+        
+    def forward(self, x, memory, src_mask, tgt_mask):
+        for layer in self.layers:
+            x = layer(x, memory, src_mask, tgt_mask)
+        return self.norm(x)
+    
+    
+    
+class SublayerConnection(nn.Module):
+    """
+    A residual connection followed by a layer norm.
+    Note for code simplicity the norm is first as opposed to last.
+    """
+    def __init__(self, size, dropout):
+        super().__init__()
+        self.norm = LayerNorm(size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, sublayer):
+        "Apply residual connection to any sublayer with the same size."
+        return x + self.dropout(sublayer(self.norm(x)))
+    
+    
+    
+class EncoderLayer(nn.Module):
+    "Encoder is made up of self-attn and feed forward (defined below)"
+    def __init__(self, size, self_attn, feed_forward, dropout):
+        super().__init__()
+        self.self_attn = self_attn
+        self.feed_forward = feed_forward
+        self.sublayer = clones(SublayerConnection(size, dropout), 2)
+        self.size = size
+
+    def forward(self, x, mask):
+        "Follow Figure 1 (left) for connections."
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
+        return self.sublayer[1](x, self.feed_forward)
+    
+    
+
+class DecoderLayer(nn.Module):
+    "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
+    def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
+        super().__init__()
+        self.size = size
+        self.self_attn = self_attn
+        self.src_attn = src_attn
+        self.feed_forward = feed_forward
+        self.sublayer = clones(SublayerConnection(size, dropout), 3)
+ 
+    def forward(self, x, memory, src_mask, tgt_mask):
+        "Follow Figure 1 (right) for connections."
+        m = memory
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
+        x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
+        return self.sublayer[2](x, self.feed_forward)
