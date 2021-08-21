@@ -114,7 +114,8 @@ class MultiHeadedAttention(nn.Module):
 
         # Compute the scaled attention: [batch_size, num_heads, seq_len, depth] and
         # Attention weights: [batch_size, num_heads, seq_len_q, seq_len_k]
-        scaled_attn, self.attn_weights = scaled_dot_product_attn(query, key, value, mask=mask, dropout=self.dropout)
+        scaled_attn, self.attn_weights = scaled_dot_product_attn(
+            query=q, key=k, value=v, mask=mask, dropout=self.dropout)
 
         # Concat the num_heads and depth (back to d_model) into shape [batch_size, seq_len, d_model]
         concat_scaled_attn = scaled_attn.transpose(1, 2).contiguous().view(num_batches, -1, self.num_heads * self.depth)
@@ -139,8 +140,8 @@ class TransformerOutputGenerator(nn.Module):
 class EncoderLayer(nn.Module):
     def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
         super().__init__()
-        self.multi_head_attn = MultiHeadedAttention(d_model, num_heads)
-        self.point_wise_ff = PositionWiseFeedForward(d_model, d_ff)
+        self.multi_head_attn = MultiHeadedAttention(d_model=d_model, num_heads=num_heads, dropout=dropout)
+        self.point_wise_ff = PositionWiseFeedForward(d_model=d_model, d_ff=d_ff)
         self.layer_norm_1 = nn.LayerNorm(d_model, eps=1e-6)
         self.layer_norm_2 = nn.LayerNorm(d_model, eps=1e-6)
         self.dropout_1 = nn.Dropout(p=dropout)
@@ -193,14 +194,15 @@ class DecoderLayer(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, N, d_model, num_heads, d_ff, input_vocab_size, max_len, rate=0.1):
+    def __init__(self, n_x, d_model, num_heads, d_ff, input_vocab_size, max_len, rate=0.1):
         super().__init__()
         self.d_model = d_model
-        self.N = N
+        # Nx will be the number of transformer blocks sequentially connected
+        self.n_x = n_x
         self.embedding = WordEmbeddings(d_model, input_vocab_size)
         self.positional_encoder = PositionalEncoding(d_model, dropout=rate, max_len=max_len)
         # Create a list of
-        self.trf_encoder_blocks = [EncoderLayer(d_model, num_heads, d_ff, rate) for _ in range(N)]
+        self.trf_encoder_blocks = [EncoderLayer(d_model, num_heads, d_ff, rate) for _ in range(n_x)]
         self.dropout = nn.Dropout(p=rate)
 
     def forward(self, x, mask):
@@ -210,7 +212,7 @@ class TransformerEncoder(nn.Module):
         x = self.dropout(x)
 
         # Run N transformer blocks
-        for i in range(self.N):
+        for i in range(self.n_x):
             x = self.trf_encoder_blocks[i](x, mask)
 
         # Output shape will also be: [batch_size, input_seq_len, d_model]
