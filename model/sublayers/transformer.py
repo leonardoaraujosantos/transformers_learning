@@ -42,7 +42,7 @@ class WordEmbeddings(nn.Module):
         return self.lut(x) * math.sqrt(self.d_model)
 
 
-class PositionwiseFeedForward(nn.Module):
+class PositionWiseFeedForward(nn.Module):
     def __init__(self, d_model, d_ff, dropout=0.1):
         super().__init__()
         self.w_1 = nn.Linear(d_model, d_ff)
@@ -131,90 +131,74 @@ class MultiHeadedAttention(nn.Module):
         # Concat the num_heads and depth (back to d_model) into shape [batch_size, seq_len, d_model]
         concat_scaled_attn = scaled_attn.transpose(1, 2).contiguous().view(num_batches, -1, self.num_heads * self.depth)
         output = self.linear_concat(concat_scaled_attn)
-        return output
+        return output, self.attn_weights
 
 
-class Encoder(nn.Module):
+class TransformerOutputGenerator(nn.Module):
     """
-    Core encoder is a stack of N layers"
+    Last layer of the decoder where the classes (or words) are generated, don't forget that on the
+    transformer decoder/encoder arquitecture the output will be fed back to the decoder one step
+    at a time
     """
-
-    def __init__(self, layer, N):
+    def __init__(self, d_model, num_classes_or_vocab_size):
         super().__init__()
-        self.layers = clones(layer, N)
-        self.norm = nn.LayerNorm(layer.size)
+        self.proj = nn.Linear(d_model, num_classes_or_vocab_size)
 
-    def forward(self, x, mask):
-        "Pass the input (and mask) through each layer in turn."
-        for layer in self.layers:
-            x = layer(x, mask)
-        return self.norm(x)
-
-
-class Decoder(nn.Module):
-    """
-    Generic N layer decoder with masking.
-    """
-
-    def __init__(self, layer, N):
-        super().__init__()
-        self.layers = clones(layer, N)
-        self.norm = nn.LayerNorm(layer.size)
-
-    def forward(self, x, memory, src_mask, tgt_mask):
-        for layer in self.layers:
-            x = layer(x, memory, src_mask, tgt_mask)
-        return self.norm(x)
-
-
-class SublayerConnection(nn.Module):
-    """
-    A residual connection followed by a layer norm.
-    Note for code simplicity the norm is first as opposed to last.
-    """
-
-    def __init__(self, size, dropout):
-        super().__init__()
-        self.norm = nn.LayerNorm(size)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x, sublayer):
-        "Apply residual connection to any sublayer with the same size."
-        return x + self.dropout(sublayer(self.norm(x)))
+    def forward(self, x):
+        return F.log_softmax(self.proj(x), dim=-1)
 
 
 class EncoderLayer(nn.Module):
-    """
-    Encoder is made up of self-attn and feed forward (defined below)
-    """
-
-    def __init__(self, size, self_attn, feed_forward, dropout):
+    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
         super().__init__()
-        self.self_attn = self_attn
-        self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 2)
-        self.size = size
+        self.multi_head_attn = MultiHeadedAttention(d_model, num_heads)
+        self.point_wise_ff = PositionWiseFeedForward(d_model, d_ff)
+        self.layer_norm_1 = nn.LayerNorm(d_model, eps=1e-6)
+        self.layer_norm_2 = nn.LayerNorm(d_model, eps=1e-6)
+        self.dropout_1 = nn.Dropout(p=dropout)
+        self.dropout_2 = nn.Dropout(p=dropout)
 
-    def forward(self, x, mask):
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
-        return self.sublayer[1](x, self.feed_forward)
+    def forward(self, x, mask=None):
+        # Key==Query==Value (Self-attention) shapes: [batch_size, input_seq_len, d_model]
+        attn_output, _ = self.multi_head_attn(x, x, x, mask)
+        attn_output = self.dropout_1(attn_output)
+        output_1 = self.layer_norm_1(x + attn_output)
+
+        ffn_output = self.point_wise_ff(output_1)
+        ffn_output = self.dropout_2(ffn_output)
+        output_2 = self.layer_norm_1(output_1 + ffn_output)
+        # Output shape: [batch_size, input_seq_len, d_model]
+        return output_2
 
 
 class DecoderLayer(nn.Module):
-    """
-    Decoder is made of self-attn, src-attn, and feed forward (defined below)
-    """
-
-    def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
+    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
         super().__init__()
-        self.size = size
-        self.self_attn = self_attn
-        self.src_attn = src_attn
-        self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 3)
+        self.multi_head_attn_1 = MultiHeadedAttention(d_model, num_heads)
+        self.multi_head_attn_2 = MultiHeadedAttention(d_model, num_heads)
+        self.point_wise_ff = PositionWiseFeedForward(d_model, d_ff)
+        self.layer_norm_1 = nn.LayerNorm(d_model, eps=1e-6)
+        self.layer_norm_2 = nn.LayerNorm(d_model, eps=1e-6)
+        self.layer_norm_3 = nn.LayerNorm(d_model, eps=1e-6)
+        self.dropout_1 = nn.Dropout(p=dropout)
+        self.dropout_2 = nn.Dropout(p=dropout)
+        self.dropout_3 = nn.Dropout(p=dropout)
 
-    def forward(self, x, memory, src_mask, tgt_mask):
-        m = memory
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
-        x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
-        return self.sublayer[2](x, self.feed_forward)
+    def forward(self, x, encoder_output, look_ahead_mask=None, padding_mask=None):
+        # Notice that we have an input x and the encoder (key, values) all with shape:
+        # [batch_size, input_seq_len, d_model]
+        # x will be the last output sentence (created step by step)
+        attn_output_1, attn_weights_1 = self.multi_head_attn_1(
+            x, x, x, look_ahead_mask)
+        attn_output_1 = self.dropout_1(attn_output_1)
+        output_1 = self.layer_norm_1(attn_output_1 + x)
+
+        attn_output_2, attn_weights_2 = self.multi_head_attn_2(
+            encoder_output, encoder_output, output_1, padding_mask)
+        attn_output_2 = self.dropout_2(attn_output_2)
+        output_2 = self.layer_norm_2(attn_output_2 + output_1)
+
+        ffn_output = self.point_wise_ff(output_2)
+        ffn_output = self.dropout_3(ffn_output)
+        output_3 = self.layer_norm_3(output_2 + ffn_output)
+        return output_3, attn_weights_1, attn_weights_2
