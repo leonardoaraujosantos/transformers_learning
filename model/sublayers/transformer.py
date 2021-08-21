@@ -20,18 +20,6 @@ import copy
 import numpy as np
 
 
-def clones(module, N):
-    "Produce N identical layers."
-    return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
-
-
-def subsequent_mask(size):
-    "Mask out subsequent positions."
-    attn_shape = (1, size, size)
-    subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
-    return torch.from_numpy(subsequent_mask) == 0
-
-
 class WordEmbeddings(nn.Module):
     def __init__(self, d_model, vocab):
         super().__init__()
@@ -54,7 +42,7 @@ class PositionWiseFeedForward(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout, max_len=5000):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -202,3 +190,57 @@ class DecoderLayer(nn.Module):
         ffn_output = self.dropout_3(ffn_output)
         output_3 = self.layer_norm_3(output_2 + ffn_output)
         return output_3, attn_weights_1, attn_weights_2
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, N, d_model, num_heads, d_ff, input_vocab_size, max_len, rate=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.N = N
+        self.embedding = WordEmbeddings(d_model, input_vocab_size)
+        self.positional_encoder = PositionalEncoding(d_model, dropout=rate, max_len=max_len)
+        # Create a list of
+        self.trf_encoder_blocks = [EncoderLayer(d_model, num_heads, d_ff, rate) for _ in range(N)]
+        self.dropout = nn.Dropout(p=rate)
+
+    def forward(self, x, mask):
+        # After embedding the shape will be [batch_size, input_seq_len, d_model]
+        x = self.embedding(x)
+        x = self.positional_encoder(x)
+        x = self.dropout(x)
+
+        # Run N transformer blocks
+        for i in range(self.N):
+            x = self.trf_encoder_blocks[i](x, mask)
+
+        # Output shape will also be: [batch_size, input_seq_len, d_model]
+        return x
+
+
+class TransformerDecoder(nn.Module):
+    def __init__(self, N, d_model, num_heads, d_ff, output_vocab_size, max_len, rate=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.N = N
+        self.embedding = WordEmbeddings(d_model, output_vocab_size)
+        self.positional_encoder = PositionalEncoding(d_model, dropout=rate, max_len=max_len)
+
+        self.trf_decoder_blocks = [DecoderLayer(d_model, num_heads, d_ff, rate) for _ in range(N)]
+        self.dropout = nn.Dropout(p=rate)
+
+    def forward(self, x, encoder_output, look_ahead_mask=None, padding_mask=None):
+        attention_weights = {}
+        # After embedding the shape will be [batch_size, input_seq_len, d_model]
+        x = self.embedding(x)
+        x = self.positional_encoder(x)
+        x = self.dropout(x)
+
+        # Run N transformer blocks
+        for i in range(self.N):
+            x, attn_weight_1, attn_weight_2 = self.trf_decoder_blocks[i](
+                x, encoder_output, look_ahead_mask, padding_mask)
+            attention_weights[f'decoder_layer{i + 1}_attn_weight_1'] = attn_weight_1
+            attention_weights[f'decoder_layer{i + 1}_attn_weight_2'] = attn_weight_2
+
+        # Output shape will also be: [batch_size, input_seq_len, d_model]
+        return x, attention_weights
