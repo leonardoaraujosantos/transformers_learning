@@ -137,7 +137,7 @@ class TransformerOutputGenerator(nn.Module):
         return F.log_softmax(self.proj(x), dim=-1)
 
 
-class EncoderLayer(nn.Module):
+class EncoderBlock(nn.Module):
     def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
         super().__init__()
         self.multi_head_attn = MultiHeadedAttention(d_model=d_model, num_heads=num_heads, dropout=dropout)
@@ -160,12 +160,12 @@ class EncoderLayer(nn.Module):
         return output_2
 
 
-class DecoderLayer(nn.Module):
+class DecoderBlock(nn.Module):
     def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
         super().__init__()
-        self.multi_head_attn_1 = MultiHeadedAttention(d_model, num_heads)
-        self.multi_head_attn_2 = MultiHeadedAttention(d_model, num_heads)
-        self.point_wise_ff = PositionWiseFeedForward(d_model, d_ff)
+        self.multi_head_attn_1 = MultiHeadedAttention(d_model=d_model, num_heads=num_heads, dropout=dropout)
+        self.multi_head_attn_2 = MultiHeadedAttention(d_model=d_model, num_heads=num_heads, dropout=dropout)
+        self.point_wise_ff = PositionWiseFeedForward(d_model=d_model, d_ff=d_ff)
         self.layer_norm_1 = nn.LayerNorm(d_model, eps=1e-6)
         self.layer_norm_2 = nn.LayerNorm(d_model, eps=1e-6)
         self.layer_norm_3 = nn.LayerNorm(d_model, eps=1e-6)
@@ -182,8 +182,9 @@ class DecoderLayer(nn.Module):
         attn_output_1 = self.dropout_1(attn_output_1)
         output_1 = self.layer_norm_1(attn_output_1 + x)
 
+        # Observer that the output of the decoder can query information learned on the encoder
         attn_output_2, attn_weights_2 = self.multi_head_attn_2(
-            encoder_output, encoder_output, output_1, padding_mask)
+            value=encoder_output, key=encoder_output, query=output_1, mask=padding_mask)
         attn_output_2 = self.dropout_2(attn_output_2)
         output_2 = self.layer_norm_2(attn_output_2 + output_1)
 
@@ -202,7 +203,7 @@ class TransformerEncoder(nn.Module):
         self.embedding = WordEmbeddings(d_model, input_vocab_size)
         self.positional_encoder = PositionalEncoding(d_model, dropout=rate, max_len=max_len)
         # Create a list of
-        self.trf_encoder_blocks = [EncoderLayer(d_model, num_heads, d_ff, rate) for _ in range(n_x)]
+        self.trf_encoder_blocks = nn.ModuleList([EncoderBlock(d_model, num_heads, d_ff, rate) for _ in range(n_x)])
         self.dropout = nn.Dropout(p=rate)
 
     def forward(self, x, mask):
@@ -220,14 +221,14 @@ class TransformerEncoder(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, N, d_model, num_heads, d_ff, output_vocab_size, max_len, rate=0.1):
+    def __init__(self, n_x, d_model, num_heads, d_ff, output_vocab_size, max_len, rate=0.1):
         super().__init__()
         self.d_model = d_model
-        self.N = N
+        self.n_x = n_x
         self.embedding = WordEmbeddings(d_model, output_vocab_size)
         self.positional_encoder = PositionalEncoding(d_model, dropout=rate, max_len=max_len)
 
-        self.trf_decoder_blocks = [DecoderLayer(d_model, num_heads, d_ff, rate) for _ in range(N)]
+        self.trf_decoder_blocks = nn.ModuleList([DecoderBlock(d_model, num_heads, d_ff, rate) for _ in range(n_x)])
         self.dropout = nn.Dropout(p=rate)
 
     def forward(self, x, encoder_output, look_ahead_mask=None, padding_mask=None):
@@ -238,7 +239,7 @@ class TransformerDecoder(nn.Module):
         x = self.dropout(x)
 
         # Run N transformer blocks
-        for i in range(self.N):
+        for i in range(self.n_x):
             x, attn_weight_1, attn_weight_2 = self.trf_decoder_blocks[i](
                 x, encoder_output, look_ahead_mask, padding_mask)
             attention_weights[f'decoder_layer{i + 1}_attn_weight_1'] = attn_weight_1
