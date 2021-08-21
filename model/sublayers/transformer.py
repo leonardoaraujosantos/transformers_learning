@@ -61,7 +61,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-def attention(query, key, value, mask=None, dropout=None):
+def scaled_dot_product_attn(query, key, value, mask=None, dropout=None):
     # Input shape(key, query and values): [batch, num_heads, seq_len, depth]
     # Get the depth
     d_k = query.size(-1)
@@ -114,7 +114,7 @@ class MultiHeadedAttention(nn.Module):
 
         # Compute the scaled attention: [batch_size, num_heads, seq_len, depth] and
         # Attention weights: [batch_size, num_heads, seq_len_q, seq_len_k]
-        scaled_attn, self.attn_weights = attention(query, key, value, mask=mask, dropout=self.dropout)
+        scaled_attn, self.attn_weights = scaled_dot_product_attn(query, key, value, mask=mask, dropout=self.dropout)
 
         # Concat the num_heads and depth (back to d_model) into shape [batch_size, seq_len, d_model]
         concat_scaled_attn = scaled_attn.transpose(1, 2).contiguous().view(num_batches, -1, self.num_heads * self.depth)
