@@ -20,6 +20,33 @@ import copy
 import numpy as np
 
 
+def create_padding_mask(seq):
+    """
+    Mask all the pad tokens in the batch of sequence. It ensures that the model does not treat padding
+    as the input.
+    The mask indicates where pad value 0 is present: it outputs a 1 at those locations, and a 0 otherwise.
+    The input shape is [batch, seq_len], the output shape: [batch, 1, 1, seq_len]
+    """
+    # Everything that is zero will become "False" otherwise it will become "True"
+    seq_masked = seq == 0
+    # add extra dimensions to add the padding
+    # to the attention logits.
+    seq_masked_unsqueezed = seq_masked.unsqueeze(1).unsqueeze(1)
+    return seq_masked_unsqueezed
+
+
+def create_look_ahead_mask(size):
+    """
+    Creates a mask that avoid the decoder attention to see anything in the future, allow only past data
+    """
+    attn_shape = (size, size)
+    # Return a copy of an array with the elements below the k-th diagonal zeroed (we want as ones...)
+    subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
+    # Invert the elements (now we have our ones bellow the k-th diagonal)
+    inverted_values = torch.from_numpy(subsequent_mask) == 0
+    return inverted_values
+
+
 class WordEmbeddings(nn.Module):
     def __init__(self, d_model, vocab_size):
         super().__init__()
@@ -129,6 +156,7 @@ class TransformerOutputGenerator(nn.Module):
     transformer decoder/encoder arquitecture the output will be fed back to the decoder one step
     at a time
     """
+
     def __init__(self, d_model, num_classes_or_vocab_size):
         super().__init__()
         self.proj = nn.Linear(d_model, num_classes_or_vocab_size)
@@ -253,6 +281,7 @@ class TransformerEncoderDecoder(nn.Module):
     """
     Transformer architecture commonly used on Translation tasks
     """
+
     def __init__(self, n_x, d_model, num_heads, d_ff,
                  input_vocab_size, output_vocab_size, max_len_input, max_len_output, rate=0.1):
         super().__init__()
@@ -266,8 +295,26 @@ class TransformerEncoderDecoder(nn.Module):
                                           max_len=max_len_output, rate=rate)
         self.final_layer = nn.Linear(d_model, output_vocab_size)
 
-    def create_masks(self, inp, tar):
-        pass
+    @staticmethod
+    def create_masks(inp, tar):
+        """
+        Create masks to avoid calculating values on the PAD token and to
+        enforce causality (only take into account past tokens) on the decoder attention
+        """
+        # Encoder padding mask
+        enc_padding_mask = create_padding_mask(inp)
+
+        # Used in the 2nd attention block in the decoder.
+        # This padding mask is used to mask the encoder outputs.
+        dec_padding_mask = create_padding_mask(inp)
+
+        # Used in the 1st attention block in the decoder.
+        # It is used to pad and mask future tokens in the input received by
+        # the decoder.
+        look_ahead_mask = create_look_ahead_mask(tar.shape[1])
+        dec_target_padding_mask = create_padding_mask(tar)
+        look_ahead_mask = torch.max(dec_target_padding_mask, look_ahead_mask)
+        return enc_padding_mask, look_ahead_mask, dec_padding_mask
 
     def forward(self, inputs, current_output):
         """
@@ -275,6 +322,8 @@ class TransformerEncoderDecoder(nn.Module):
         gathered step-by step
         """
         enc_padding_mask, look_ahead_mask, dec_padding_mask = self.create_masks(inputs, current_output)
+        # TODO issue with mask
+        enc_padding_mask, dec_padding_mask, look_ahead_mask = None, None, None
 
         # (batch_size, inp_seq_len, d_model)
         enc_output = self.encoder(inputs, enc_padding_mask)
