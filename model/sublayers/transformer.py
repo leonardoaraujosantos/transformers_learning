@@ -31,7 +31,7 @@ def create_padding_mask(seq):
     seq_masked = seq == 0
     # add extra dimensions to add the padding
     # to the attention logits.
-    seq_masked_unsqueezed = seq_masked.unsqueeze(1).unsqueeze(1)
+    seq_masked_unsqueezed = seq_masked.unsqueeze(1)
     return seq_masked_unsqueezed.int()
 
 
@@ -97,7 +97,8 @@ def scaled_dot_product_attn(query, key, value, mask=None, dropout=None):
     scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
     # Apply mask (used Decoder Attention) to avoid looking into the future tokens (casual)
     if mask is not None:
-        scores = scores.masked_fill(mask == 0, -1e9)
+        scores += (mask * -1e9)
+        #scores = scores.masked_fill(mask == 0, -1e9)
 
     # The attention tensor is used more for debugging
     attn_weights = F.softmax(scores, dim=-1)
@@ -177,7 +178,7 @@ class EncoderBlock(nn.Module):
 
     def forward(self, x, mask=None):
         # Key==Query==Value (Self-attention) shapes: [batch_size, input_seq_len, d_model]
-        attn_output, _ = self.multi_head_attn(x, x, x, mask)
+        attn_output, _ = self.multi_head_attn(key=x, query=x, value=x, mask=mask)
         attn_output = self.dropout_1(attn_output)
         output_1 = self.layer_norm_1(x + attn_output)
 
@@ -206,7 +207,7 @@ class DecoderBlock(nn.Module):
         # [batch_size, input_seq_len, d_model]
         # x will be the last output sentence (created step by step)
         attn_output_1, attn_weights_1 = self.multi_head_attn_1(
-            x, x, x, look_ahead_mask)
+            key=x, query=x, value=x, mask=look_ahead_mask)
         attn_output_1 = self.dropout_1(attn_output_1)
         output_1 = self.layer_norm_1(attn_output_1 + x)
 
@@ -321,9 +322,8 @@ class TransformerEncoderDecoder(nn.Module):
         Remember on the transformers the input is given all at once, while the outputs are
         gathered step-by step
         """
+        # Create masks to avoid computing over PAD and decoder to see the future (masked attention)
         enc_padding_mask, look_ahead_mask, dec_padding_mask = self.create_masks(inputs, current_output)
-        # TODO issue with mask
-        enc_padding_mask, dec_padding_mask, look_ahead_mask = None, None, None
 
         # (batch_size, inp_seq_len, d_model)
         enc_output = self.encoder(inputs, enc_padding_mask)
