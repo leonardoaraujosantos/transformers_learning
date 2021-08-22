@@ -32,7 +32,7 @@ def create_padding_mask(seq):
     # add extra dimensions to add the padding
     # to the attention logits.
     seq_masked_unsqueezed = seq_masked.unsqueeze(1).unsqueeze(1)
-    return seq_masked_unsqueezed
+    return seq_masked_unsqueezed.int()
 
 
 def create_look_ahead_mask(size):
@@ -44,7 +44,7 @@ def create_look_ahead_mask(size):
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
     # Invert the elements (now we have our ones bellow the k-th diagonal)
     inverted_values = torch.from_numpy(subsequent_mask) == 0
-    return inverted_values
+    return inverted_values.int()
 
 
 class WordEmbeddings(nn.Module):
@@ -313,7 +313,7 @@ class TransformerEncoderDecoder(nn.Module):
         # the decoder.
         look_ahead_mask = create_look_ahead_mask(tar.shape[1])
         dec_target_padding_mask = create_padding_mask(tar)
-        look_ahead_mask = torch.max(dec_target_padding_mask, look_ahead_mask)
+        look_ahead_mask = torch.maximum(dec_target_padding_mask, look_ahead_mask)
         return enc_padding_mask, look_ahead_mask, dec_padding_mask
 
     def forward(self, inputs, current_output):
