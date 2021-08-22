@@ -21,9 +21,9 @@ import numpy as np
 
 
 class WordEmbeddings(nn.Module):
-    def __init__(self, d_model, vocab):
+    def __init__(self, d_model, vocab_size):
         super().__init__()
-        self.lut = nn.Embedding(vocab, d_model)
+        self.lut = nn.Embedding(vocab_size, d_model)
         self.d_model = d_model
 
     def forward(self, x):
@@ -247,3 +247,39 @@ class TransformerDecoder(nn.Module):
 
         # Output shape will also be: [batch_size, input_seq_len, d_model]
         return x, attention_weights
+
+
+class TransformerEncoderDecoder(nn.Module):
+    """
+    Transformer architecture commonly used on Translation tasks
+    """
+    def __init__(self, n_x, d_model, num_heads, d_ff,
+                 input_vocab_size, output_vocab_size, max_len_input, max_len_output, rate=0.1):
+        super().__init__()
+        self.encoder = TransformerEncoder(n_x=n_x, d_model=d_model,
+                                          num_heads=num_heads, d_ff=d_ff,
+                                          input_vocab_size=input_vocab_size,
+                                          max_len=max_len_input, rate=rate)
+
+        self.decoder = TransformerDecoder(n_x=n_x, d_model=d_model, num_heads=num_heads, d_ff=d_ff,
+                                          output_vocab_size=output_vocab_size,
+                                          max_len=max_len_output, rate=rate)
+        self.final_layer = nn.Linear(d_model, output_vocab_size)
+
+    def create_masks(self, inp, tar):
+        pass
+
+    def forward(self, inputs, current_output):
+        """
+        Remember on the transformers the input is given all at once, while the outputs are
+        gathered step-by step
+        """
+        enc_padding_mask, look_ahead_mask, dec_padding_mask = self.create_masks(inputs, current_output)
+
+        # (batch_size, inp_seq_len, d_model)
+        enc_output = self.encoder(inputs, enc_padding_mask)
+
+        dec_output, attn_weights = self.decoder(current_output, enc_output, look_ahead_mask, dec_padding_mask)
+
+        next_output = self.final_layer(dec_output)
+        return next_output, attn_weights
